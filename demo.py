@@ -94,6 +94,13 @@ def main():
     print("\n=== Summary ===")
     print(tracer.render_summary())
 
+    print("\n=== Slowest spans ===")
+    for span in tracer.slowest(n=3):
+        print(f"{span['path']}: {span['duration_ms']:.1f}ms, "
+              f"{span['total_tokens']} tok")
+    warnings = tracer.check_budget(max_cost_usd=1.0, max_span_ms=10_000.0)
+    print("Budget warnings:", warnings or "none")
+
     path = tracer.save_json("trace_output.json")
     print(f"\nTrace saved to {path} "
           f"({sum(s.total_tokens for s in tracer._walk())} tokens tracked)")

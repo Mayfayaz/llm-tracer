@@ -155,6 +155,56 @@ class TestThreadSafety(unittest.TestCase):
         self.assertEqual(len(t.roots), 20)
 
 
+class TestSlowestAndBudget(unittest.TestCase):
+    def _tracer_with_known_durations(self):
+        """Spans with deterministic durations (set directly, not slept)."""
+        t = Tracer(pricing={"m": (2.0, 8.0)})
+        with t.span("slow_llm", model="m") as s:
+            s.record_usage(prompt_tokens=1_000_000, completion_tokens=500_000)
+            with t.span("fast_child"):
+                pass
+        slow, child = t.roots[0], t.roots[0].children[0]
+        slow.end_time = slow.start_time + 0.500   # 500ms
+        child.end_time = child.start_time + 0.010  # 10ms
+        return t, slow, child
+
+    def test_slowest_orders_by_duration_and_shows_path(self):
+        t, slow, child = self._tracer_with_known_durations()
+        rows = t.slowest(n=2)
+        self.assertEqual(rows[0]["name"], "slow_llm")
+        self.assertAlmostEqual(rows[0]["duration_ms"], 500.0, places=0)
+        self.assertEqual(rows[1]["name"], "fast_child")
+        self.assertEqual(rows[1]["path"], "slow_llm > fast_child")
+
+    def test_totals_and_cost(self):
+        t, _, _ = self._tracer_with_known_durations()
+        self.assertEqual(t.total_tokens(), 1_500_000)
+        self.assertAlmostEqual(t.total_cost_usd(), 6.0)
+
+    def test_total_cost_none_when_no_priced_spans(self):
+        t = Tracer()
+        with t.span("plain"):
+            pass
+        self.assertIsNone(t.total_cost_usd())
+
+    def test_check_budget_flags_cost_and_slow_span(self):
+        t, _, _ = self._tracer_with_known_durations()
+        warnings = t.check_budget(max_cost_usd=5.0, max_span_ms=100.0)
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(any("exceeds budget" in w for w in warnings))
+        self.assertTrue(any("slow_llm" in w for w in warnings))
+
+    def test_check_budget_silent_when_within_budget(self):
+        t, _, _ = self._tracer_with_known_durations()
+        self.assertEqual(t.check_budget(max_cost_usd=10.0, max_span_ms=1000.0), [])
+
+    def test_check_budget_no_cost_warning_without_priced_spans(self):
+        t = Tracer()
+        with t.span("plain"):
+            pass
+        self.assertEqual(t.check_budget(max_cost_usd=0.01), [])
+
+
 class TestHelpers(unittest.TestCase):
     def test_estimate_tokens(self):
         self.assertGreater(estimate_tokens("hello world, this is a test"), 0)

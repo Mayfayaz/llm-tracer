@@ -17,6 +17,12 @@ ASCII tree in your terminal. One file (`tracer.py`), zero dependencies.
 - **Error capture** — exceptions inside a span are recorded on it (then
   re-raised, so pipelines fail loudly) and flagged in the tree.
 - **Export** — full traces serialize to JSON (`save_json`).
+- **Slowest spans & budgets** — `slowest(n)` ranks individual spans by
+  latency with their path in the tree (`answer > generate`), and
+  `check_budget(max_cost_usd=..., max_span_ms=...)` returns warnings when
+  a trace breaches a cost or per-span latency budget. `total_tokens()` and
+  `total_cost_usd()` give trace-wide totals; an unpriced trace reports
+  cost as `None`, never a misleading $0.
 - **Readable output** — `render()` prints an ASCII span tree with latency,
   tokens and cost; `render_summary()` prints a per-step aggregate table.
 

@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Approximate prices in USD per 1M tokens: {model: (input, output)}.
 # Pass your own `pricing` dict to Tracer for exact numbers.
@@ -197,6 +197,70 @@ class Tracer:
             r["total_ms"] = round(r["total_ms"], 1)
             r["cost_usd"] = round(r["cost_usd"], 6)
         return rows
+
+    def total_tokens(self) -> int:
+        """Total prompt + completion tokens across all recorded spans."""
+        return sum(s.total_tokens for s in self._walk())
+
+    def total_cost_usd(self) -> float | None:
+        """Total estimated cost across spans with a known model price.
+
+        Returns None if no span has a known cost (so callers can tell
+        "no priced spans" apart from a genuine $0 total).
+        """
+        costs = [s.cost_usd for s in self._walk() if s.cost_usd is not None]
+        return round(sum(costs), 6) if costs else None
+
+    def slowest(self, n: int = 5) -> list[dict]:
+        """The n slowest individual spans, with their path in the span tree.
+
+        The path (e.g. "answer > generate") makes it easy to tell which
+        call site a slow span came from when a step name repeats.
+        """
+        found: list[dict] = []
+
+        def walk(span: Span, path: str):
+            here = f"{path} > {span.name}" if path else span.name
+            found.append({
+                "path": here,
+                "name": span.name,
+                "kind": span.kind,
+                "duration_ms": round(span.duration_ms, 1),
+                "total_tokens": span.total_tokens,
+                "cost_usd": None if span.cost_usd is None else round(span.cost_usd, 6),
+                "error": span.error,
+            })
+            for child in span.children:
+                walk(child, here)
+
+        for root in self.roots:
+            walk(root, "")
+        return sorted(found, key=lambda r: r["duration_ms"], reverse=True)[:n]
+
+    def check_budget(self, max_cost_usd: float | None = None,
+                     max_span_ms: float | None = None) -> list[str]:
+        """Warnings when a trace breaches a cost or per-span latency budget.
+
+        Returns an empty list when everything is within budget. A trace
+        with no priced spans never triggers a cost warning — it has
+        nothing to compare against, so it stays silent rather than
+        reporting a misleading $0.
+        """
+        warnings: list[str] = []
+        if max_cost_usd is not None:
+            total = self.total_cost_usd()
+            if total is not None and total > max_cost_usd:
+                warnings.append(
+                    f"total cost ${total:.6f} exceeds budget ${max_cost_usd:.6f}"
+                )
+        if max_span_ms is not None:
+            for span in self.slowest(n=len(list(self._walk()))):
+                if span["duration_ms"] > max_span_ms:
+                    warnings.append(
+                        f"span '{span['path']}' took {span['duration_ms']:.1f}ms, "
+                        f"over the {max_span_ms:.1f}ms budget"
+                    )
+        return warnings
 
     # -- export / render --------------------------------------------------
     def to_dict(self) -> dict:
